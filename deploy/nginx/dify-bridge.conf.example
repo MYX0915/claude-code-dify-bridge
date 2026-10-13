@@ -1,0 +1,21 @@
+# 使用前替换 server_name、证书路径，并确认 DNS/防火墙已配置。
+# Nginx 只负责 TLS 和本地访问控制，不隐藏或伪造上游请求身份。
+server {
+    listen 443 ssl;
+    server_name bridge.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/bridge.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bridge.example.com/privkey.pem;
+
+    allow 127.0.0.1;
+    deny all;
+
+    location / {
+        proxy_pass http://127.0.0.1:4421;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}

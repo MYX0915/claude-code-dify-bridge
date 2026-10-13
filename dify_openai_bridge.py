@@ -29,24 +29,37 @@ CONFIG_PATH = Path(os.environ.get("DIFY_CONFIG_JSON", DEFAULT_CONFIG))
 MODEL_SELECTOR = os.environ.get("DIFY_APP_MODEL", "DeepSeek-v4-pro")
 LOCAL_API_KEY = os.environ.get("DIFY_BRIDGE_API_KEY", "sk-dify-local-bridge")
 DEFAULT_USER = os.environ.get("DIFY_USER", "claude-code")
+DIFY_BASE_URL_OVERRIDE = os.environ.get("DIFY_BASE_URL")
+DIFY_APP_API_KEY = os.environ.get("DIFY_APP_API_KEY")
+DIFY_PARAMETER_CHECK_INTERVAL = max(60, int(os.environ.get("DIFY_PARAMETER_CHECK_INTERVAL", "3600")))
 logger = logging.getLogger("dify_bridge")
 logging.basicConfig(
     level=os.environ.get("DIFY_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s dify_bridge %(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def load_dify_config() -> tuple[str, str, str]:
-    rows = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    rows: list[dict[str, Any]] = []
+    if CONFIG_PATH.exists():
+        rows = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     row = next((x for x in rows if x.get("model") == MODEL_SELECTOR), None)
     if row is None:
         row = next((x for x in rows if x.get("name") == MODEL_SELECTOR), None)
-    if row is None:
-        raise RuntimeError(f"没有在 {CONFIG_PATH} 找到模型 {MODEL_SELECTOR}")
-    return row["base_url"].rstrip("/"), row["api_key"], row.get("model", MODEL_SELECTOR)
+    base_url = DIFY_BASE_URL_OVERRIDE or (row or {}).get("base_url")
+    api_key = DIFY_APP_API_KEY or (row or {}).get("api_key")
+    if not base_url or not api_key:
+        raise RuntimeError(
+            "缺少 Dify 配置：请设置 DIFY_BASE_URL 和 DIFY_APP_API_KEY，"
+            f"或提供包含模型 {MODEL_SELECTOR} 的本地配置文件 {CONFIG_PATH}"
+        )
+    return str(base_url).rstrip("/"), str(api_key), (row or {}).get("model", MODEL_SELECTOR)
 
 
 DIFY_BASE_URL, DIFY_API_KEY, DIFY_MODEL = load_dify_config()
+DIFY_PARAMETER_KEYS: set[str] = set()
+DIFY_PARAMETER_TASK: asyncio.Task[None] | None = None
 app = FastAPI(title="Dify OpenAI Bridge")
 
 
@@ -181,6 +194,7 @@ async def call_dify(query: str, user: str, conversation_id: str = "") -> dict[st
         "conversation_id": conversation_id,
         "user": user,
     }
+    started = time.monotonic()
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
         "Content-Type": "application/json",
@@ -204,6 +218,12 @@ async def call_dify(query: str, user: str, conversation_id: str = "") -> dict[st
                 await asyncio.sleep(0.5 * (attempt + 1))
                 continue
             if response.status_code < 400:
+                logger.info(
+                    "dify_request status=%s attempt=%s duration_ms=%d",
+                    response.status_code,
+                    attempt + 1,
+                    int((time.monotonic() - started) * 1000),
+                )
                 return response.json()
             if response.status_code in {408, 429} or response.status_code >= 500:
                 if attempt < 2:
@@ -213,6 +233,53 @@ async def call_dify(query: str, user: str, conversation_id: str = "") -> dict[st
             logger.warning("Dify 返回错误：status=%s，user=%s", response.status_code, user)
             return {"_error": response.status_code, "_body": response.text[:2000]}
     return {"_error": 502, "_body": "Dify upstream request failed"}
+
+
+async def refresh_dify_parameters() -> None:
+    global DIFY_PARAMETER_KEYS
+    try:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.get(
+                f"{DIFY_BASE_URL}/parameters",
+                headers={
+                    "Authorization": f"Bearer {DIFY_API_KEY}",
+                    "Accept": "application/json",
+                    "User-Agent": "claude-code-dify-bridge/1.0",
+                },
+            )
+        if response.status_code >= 400:
+            logger.warning("Dify 参数探测失败：status=%s", response.status_code)
+            return
+        data = response.json()
+        exposed = data.get("user_input_form", []) if isinstance(data, dict) else []
+        DIFY_PARAMETER_KEYS = {
+            str(item.get("variable") or item.get("name"))
+            for item in exposed
+            if isinstance(item, dict) and (item.get("variable") or item.get("name"))
+        }
+        logger.info("Dify 参数探测完成：可用参数数量=%d", len(DIFY_PARAMETER_KEYS))
+    except (httpx.RequestError, ValueError) as exc:
+        logger.warning("Dify 参数探测异常：%s", type(exc).__name__)
+
+
+async def poll_dify_parameters() -> None:
+    while True:
+        await refresh_dify_parameters()
+        await asyncio.sleep(DIFY_PARAMETER_CHECK_INTERVAL)
+
+
+@app.on_event("startup")
+async def start_parameter_monitor() -> None:
+    global DIFY_PARAMETER_TASK
+    DIFY_PARAMETER_TASK = asyncio.create_task(poll_dify_parameters())
+
+
+@app.on_event("shutdown")
+async def stop_parameter_monitor() -> None:
+    if DIFY_PARAMETER_TASK is not None:
+        DIFY_PARAMETER_TASK.cancel()
+        await asyncio.gather(DIFY_PARAMETER_TASK, return_exceptions=True)
 
 
 def openai_response(answer: str, model: str, rid: str) -> dict[str, Any]:

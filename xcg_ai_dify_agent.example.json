@@ -1,0 +1,8 @@
+[
+  {
+    "name": "销售助手",
+    "model": "DeepSeek-v4-pro",
+    "base_url": "https://dify.example.com/v1",
+    "api_key": ""
+  }
+]

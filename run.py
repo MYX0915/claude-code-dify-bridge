@@ -43,6 +43,18 @@ def terminate_all(processes: list[subprocess.Popen]) -> None:
             process.kill()
 
 
+def load_local_env(env: dict[str, str]) -> None:
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
 def main() -> int:
     venv_root = ROOT / ".venv"
     if (venv_root / "bin/python").exists() and (venv_root / "bin/litellm").exists():
@@ -53,13 +65,12 @@ def main() -> int:
         litellm = Path("litellm")
 
     env = os.environ.copy()
-    env.update({
-        "DIFY_CONFIG_JSON": str(ROOT / "xcg_ai_dify_agent.json"),
-        "DIFY_BRIDGE_API_KEY": "sk-dify-local-bridge",
-        "DIFY_USER": "claude-code",
-        "DIFY_BRIDGE_PORT": str(PORT_BRIDGE),
-        "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES": "true",
-    })
+    load_local_env(env)
+    env.setdefault("DIFY_CONFIG_JSON", str(ROOT / "xcg_ai_dify_agent.json"))
+    env.setdefault("DIFY_BRIDGE_API_KEY", "sk-dify-local-bridge")
+    env.setdefault("DIFY_USER", "claude-code")
+    env.setdefault("DIFY_BRIDGE_PORT", str(PORT_BRIDGE))
+    env.setdefault("LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true")
 
     processes: list[subprocess.Popen] = []
     try:
