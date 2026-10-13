@@ -1,0 +1,38 @@
+[
+  {
+    "id": "1",
+    "companyid": "0",
+    "shopid": "0",
+    "scene_code": "crm_chat_stream",
+    "name": "销售助手",
+    "model": "DeepSeek-v4-pro",
+    "provider_model_id": "0",
+    "api_key": "app-uAvMhefCAn6WgJWdXH0HrbmX",
+    "base_url": "http://124.174.7.48/v1",
+    "bill_points": "0",
+    "is_default": "1",
+    "status": "1",
+    "listorder": "100",
+    "remark": "",
+    "created_at": "1787143671",
+    "updated_at": "1787143671"
+  },
+  {
+    "id": "2",
+    "companyid": "0",
+    "shopid": "0",
+    "scene_code": "crm_chat_stream",
+    "name": "销售助手",
+    "model": "DeepSeek-v4-flash",
+    "provider_model_id": "0",
+    "api_key": "app-0A1E9Hq3ZlHpZVyWemL4coIK",
+    "base_url": "http://124.174.7.48/v1",
+    "bill_points": "0",
+    "is_default": "0",
+    "status": "1",
+    "listorder": "100",
+    "remark": "",
+    "created_at": "1787143848",
+    "updated_at": "1787143848"
+  }
+]

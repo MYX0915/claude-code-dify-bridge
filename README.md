@@ -16,7 +16,8 @@ python3 run
 - Dify 适配器：`http://127.0.0.1:4010`
 - LiteLLM：`http://127.0.0.1:4421`
 
-应用密钥优先从 `.env` 中读取；`.env`、本地 Dify JSON 配置和私有配置文档不会提交到 Git。
+应用密钥优先从 `.env` 中读取。本私有仓库按部署需要保留 `PRIVATE_CONFIG.md` 和
+`xcg_ai_dify_agent.json`；请勿将仓库改为公开，或将这两个文件复制到公共仓库。
 
 Nginx HTTPS 和访问控制模板见 [`deploy/nginx/`](deploy/nginx/)。本机开发环境已经绑定到 `127.0.0.1`，不需要 Nginx。
 
@@ -29,4 +30,5 @@ Nginx HTTPS 和访问控制模板见 [`deploy/nginx/`](deploy/nginx/)。本机�
 - `DIFY_APP_MODEL`
 - `DIFY_PARAMETER_CHECK_INTERVAL`
 
-如果没有设置环境变量，适配器会读取本地 `xcg_ai_dify_agent.json`；该文件只适合本机保存，不应提交到仓库。
+如果没有设置环境变量，适配器会读取 `xcg_ai_dify_agent.json`。该文件包含当前私有部署的
+Dify 配置，仅适用于本私有仓库；部署地址和凭据说明见 [`PRIVATE_CONFIG.md`](PRIVATE_CONFIG.md)。

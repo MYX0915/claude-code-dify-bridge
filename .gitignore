@@ -3,5 +3,3 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env
-xcg_ai_dify_agent.json
-PRIVATE_CONFIG.md
