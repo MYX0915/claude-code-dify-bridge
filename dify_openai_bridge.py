@@ -8,9 +8,10 @@ application key local and converts the request and response formats.
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import html
 import json
+import logging
 import os
 import re
 import time
@@ -28,6 +29,11 @@ CONFIG_PATH = Path(os.environ.get("DIFY_CONFIG_JSON", DEFAULT_CONFIG))
 MODEL_SELECTOR = os.environ.get("DIFY_APP_MODEL", "DeepSeek-v4-pro")
 LOCAL_API_KEY = os.environ.get("DIFY_BRIDGE_API_KEY", "sk-dify-local-bridge")
 DEFAULT_USER = os.environ.get("DIFY_USER", "claude-code")
+logger = logging.getLogger("dify_bridge")
+logging.basicConfig(
+    level=os.environ.get("DIFY_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s dify_bridge %(message)s",
+)
 
 
 def load_dify_config() -> tuple[str, str, str]:
@@ -96,6 +102,25 @@ def parse_dsml_tool_calls(answer: str) -> list[dict[str, Any]]:
     for match in re.finditer(r"<ToolUse\s+id=[\"']([^\"']+)[\"']\s+path=[\"']([^\"']+)[\"']\s*/?>", normalized, re.S | re.I):
         tool_name = "Read" if match.group(1).lower() in {"read_file", "read"} else match.group(1)
         calls.append({"name": tool_name, "arguments": {"file_path": html.unescape(match.group(2))}, "call_id": "call_" + uuid.uuid4().hex})
+    for match in re.finditer(r"<tool_call\s+name=[\"']([^\"']+)[\"'][^>]*>(.*?)</tool_call>", normalized, re.S | re.I):
+        raw_arguments = html.unescape(match.group(2)).strip()
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError:
+            logger.warning("无法解析工具参数，工具名=%s", match.group(1))
+            arguments = {"raw": raw_arguments}
+        if isinstance(arguments, dict):
+            arguments = {
+                re.sub(r"(?<!^)([A-Z])", r"_\1", str(key)).lower(): value
+                for key, value in arguments.items()
+            }
+        else:
+            arguments = {"input": arguments}
+        calls.append({"name": match.group(1), "arguments": arguments, "call_id": "call_" + uuid.uuid4().hex})
+    if ("<invoke" in normalized.lower() or "<tooluse" in normalized.lower() or "<tool_call" in normalized.lower()) and not calls:
+        logger.warning("检测到未知工具标记格式，未能转换为工具调用")
+    if calls:
+        logger.info("已解析工具调用：%s", ", ".join(call["name"] for call in calls))
     return calls
 
 
@@ -135,6 +160,19 @@ def request_id() -> str:
     return "chatcmpl-" + uuid.uuid4().hex
 
 
+def extract_effort(payload: dict[str, Any]) -> str | None:
+    candidates = [
+        payload.get("effort"),
+        payload.get("reasoning_effort"),
+        (payload.get("reasoning") or {}).get("effort") if isinstance(payload.get("reasoning"), dict) else None,
+        (payload.get("metadata") or {}).get("effort") if isinstance(payload.get("metadata"), dict) else None,
+    ]
+    for value in candidates:
+        if value:
+            return str(value)
+    return None
+
+
 async def call_dify(query: str, user: str, conversation_id: str = "") -> dict[str, Any]:
     body = {
         "inputs": {},
@@ -143,15 +181,38 @@ async def call_dify(query: str, user: str, conversation_id: str = "") -> dict[st
         "conversation_id": conversation_id,
         "user": user,
     }
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            f"{DIFY_BASE_URL}/chat-messages",
-            headers={"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"},
-            json=body,
-        )
-    if response.status_code >= 400:
-        return {"_error": response.status_code, "_body": response.text}
-    return response.json()
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "claude-code-dify-bridge/1.0",
+    }
+    timeout = httpx.Timeout(120.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for attempt in range(3):
+            try:
+                response = await client.post(
+                    f"{DIFY_BASE_URL}/chat-messages",
+                    headers=headers,
+                    json=body,
+                )
+            except httpx.RequestError as exc:
+                if attempt == 2:
+                    logger.exception("Dify 请求失败，user=%s", user)
+                    return {"_error": 502, "_body": "Dify upstream request failed"}
+                logger.warning("Dify 请求网络错误，将重试：%s", type(exc).__name__)
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            if response.status_code < 400:
+                return response.json()
+            if response.status_code in {408, 429} or response.status_code >= 500:
+                if attempt < 2:
+                    logger.warning("Dify 返回 %s，将重试（第 %d 次）", response.status_code, attempt + 1)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+            logger.warning("Dify 返回错误：status=%s，user=%s", response.status_code, user)
+            return {"_error": response.status_code, "_body": response.text[:2000]}
+    return {"_error": 502, "_body": "Dify upstream request failed"}
 
 
 def openai_response(answer: str, model: str, rid: str) -> dict[str, Any]:
@@ -171,6 +232,19 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "dify_model": DIFY_MODEL}
 
 
+@app.get("/v1/models")
+async def models() -> dict[str, Any]:
+    now = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {"id": "deepseek-chat", "object": "model", "created": now, "owned_by": "dify"},
+            {"id": "claude-sonnet-4-5", "object": "model", "created": now, "owned_by": "dify"},
+            {"id": "sales-assistant", "object": "model", "created": now, "owned_by": "dify"},
+        ],
+    }
+
+
 def check_local_key(request: Request) -> bool:
     auth = request.headers.get("authorization", "")
     return auth == f"Bearer {LOCAL_API_KEY}"
@@ -181,6 +255,8 @@ async def chat_completions(request: Request):
     if not check_local_key(request):
         return JSONResponse({"error": {"message": "invalid bridge key", "type": "auth_error"}}, status_code=401)
     payload = await request.json()
+    if effort := extract_effort(payload):
+        logger.info("收到 Claude Effort=%s；Dify 应用未暴露对应推理参数，保持原始模型配置", effort)
     messages = payload.get("messages") or []
     query = messages_to_query(messages)
     user = str(payload.get("user") or DEFAULT_USER)
@@ -227,6 +303,8 @@ async def anthropic_messages(request: Request):
     if not check_local_key(request):
         return JSONResponse({"type": "error", "error": {"type": "authentication_error", "message": "invalid bridge key"}}, status_code=401)
     payload = await request.json()
+    if effort := extract_effort(payload):
+        logger.info("收到 Claude Effort=%s；Dify 应用未暴露对应推理参数，保持原始模型配置", effort)
     query = messages_to_query(payload.get("messages") or [])
     user = str(payload.get("metadata", {}).get("user_id") or DEFAULT_USER)
     result = await call_dify(query, user)
@@ -255,6 +333,8 @@ async def responses(request: Request):
     if not check_local_key(request):
         return JSONResponse({"error": {"message": "invalid bridge key", "type": "auth_error"}}, status_code=401)
     payload = await request.json()
+    if effort := extract_effort(payload):
+        logger.info("收到 Claude Effort=%s；Dify 应用未暴露对应推理参数，保持原始模型配置", effort)
     query = responses_input_to_query(payload)
     user = str(payload.get("metadata", {}).get("user_id") or payload.get("user") or DEFAULT_USER)
     result = await call_dify(query, user)
