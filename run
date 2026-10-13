@@ -45,16 +45,12 @@ def terminate_all(processes: list[subprocess.Popen]) -> None:
 
 def main() -> int:
     venv_root = ROOT / ".venv"
-    if (venv_root / "bin/python").exists():
+    if (venv_root / "bin/python").exists() and (venv_root / "bin/litellm").exists():
         python = venv_root / "bin/python"
         litellm = venv_root / "bin/litellm"
     else:
-        fallback = Path("/Users/mnb/Documents/claude-deepseek-bridge/.venv")
-        python = fallback / "bin/python"
-        litellm = fallback / "bin/litellm"
-        if not python.exists() or not litellm.exists():
-            python = Path(sys.executable)
-            litellm = Path("litellm")
+        python = Path(sys.executable)
+        litellm = Path("litellm")
 
     env = os.environ.copy()
     env.update({
