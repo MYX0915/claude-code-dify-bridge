@@ -1,0 +1,19 @@
+model_list:
+  - model_name: deepseek-chat
+    litellm_params:
+      model: openai/dify
+      api_base: http://127.0.0.1:4010/v1
+      api_key: sk-dify-local-bridge
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: openai/dify
+      api_base: http://127.0.0.1:4010/v1
+      api_key: sk-dify-local-bridge
+  - model_name: sales-assistant
+    litellm_params:
+      model: openai/dify
+      api_base: http://127.0.0.1:4010/v1
+      api_key: sk-dify-local-bridge
+
+general_settings:
+  master_key: sk-local-claude-bridge
